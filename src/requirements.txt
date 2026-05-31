@@ -1,0 +1,5 @@
+binance
+pandas
+ta
+flask
+requests

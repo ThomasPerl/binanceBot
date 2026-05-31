@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Threaded Strategy Bot</title>
+    <meta http-equiv="refresh" content="30">
+    <style>
+        body { background: #111; color: #eee; font-family: Arial; }
+        table { margin: auto; border-collapse: collapse; }
+        th, td { border: 1px solid #444; padding: 8px; }
+        input, select { width: 70px; }
+        h1 { text-align: center; }
+        .form-btn { text-align: center; margin: 20px; }
+    </style>
+</head>
+<body>
+<h1>Trading Bot Dashboard</h1>
+<form method="POST">
+<table>
+    <tr><th>Symbol</th><th>Strategie</th><th>SL %</th><th>TP %</th><th>Signal</th><th>Preis</th><th>RSI</th><th>Zeit</th></tr>
+    {% for symbol, config in configs.items() %}
+    <tr>
+        <td>{{ symbol }}</td>
+        <td>
+            <select name="strategy_{{ symbol }}">
+                {% for s in ['RSI', 'EMA', 'MACD', 'BOLL', 'MOM'] %}
+                <option value="{{ s }}" {% if config.strategy == s %}selected{% endif %}>{{ s }}</option>
+                {% endfor %}
+            </select>
+        </td>
+        <td><input type="number" name="sl_{{ symbol }}" step="0.1" value="{{ config.sl }}"></td>
+        <td><input type="number" name="tp_{{ symbol }}" step="0.1" value="{{ config.tp }}"></td>
+        <td>{{ statuses[symbol].signal if statuses[symbol] else '' }}</td>
+        <td>{{ statuses[symbol].price if statuses[symbol] else '' }}</td>
+        <td>{{ statuses[symbol].rsi if statuses[symbol] else '' }}</td>
+        <td>{{ statuses[symbol].time if statuses[symbol] else '' }}</td>
+    </tr>
+    {% endfor %}
+</table>
+<div class="form-btn"><button type="submit">Änderungen speichern</button></div>
+</form>
+</body>
+</html>
