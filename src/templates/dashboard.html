@@ -16,7 +16,7 @@
 <h1>Trading Bot Dashboard</h1>
 <form method="POST">
 <table>
-    <tr><th>Symbol</th><th>Strategie</th><th>SL %</th><th>TP %</th><th>Signal</th><th>Preis</th><th>RSI</th><th>Zeit</th></tr>
+    <tr><th>Symbol</th><th>Strategie</th><th>SL %</th><th>TP %</th><th>Signal</th><th>Preis</th><th>RSI</th><th>Position</th><th>Zeit</th></tr>
     {% for symbol, config in configs.items() %}
     <tr>
         <td>{{ symbol }}</td>
@@ -32,6 +32,7 @@
         <td>{{ statuses[symbol].signal if statuses[symbol] else '' }}</td>
         <td>{{ statuses[symbol].price if statuses[symbol] else '' }}</td>
         <td>{{ statuses[symbol].rsi if statuses[symbol] else '' }}</td>
+        <td>{{ 'OPEN @ ' ~ statuses[symbol].entry_price if statuses[symbol] and statuses[symbol].position_open else '-' }}</td>
         <td>{{ statuses[symbol].time if statuses[symbol] else '' }}</td>
     </tr>
     {% endfor %}

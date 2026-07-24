@@ -1,4 +1,6 @@
-binance
+python-binance
+cryptography
+python-dotenv
 pandas
 ta
 flask
