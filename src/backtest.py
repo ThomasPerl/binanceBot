@@ -116,45 +116,73 @@ def load_klines_cached(symbol, interval, start, end, cache_dir, force_refresh=Fa
     return df
 
 
-def compute_signals(df, strategy_code):
-    """Vectorized equivalent of the matching Strategy subclass's signal() in bot.py."""
+DEFAULT_STRATEGY_PARAMS = {
+    'RSI': {'window': 14, 'buy_threshold': 30, 'sell_threshold': 70},
+    'EMA': {'short_span': 5, 'long_span': 20},
+    'MACD': {'fast': 12, 'slow': 26, 'signal': 9},
+    'BOLL': {'window': 20, 'window_dev': 2},
+    'MOM': {'window': 5, 'buy_threshold': 3, 'sell_threshold': -3},
+}
+
+
+def compute_signals(df, strategy_code, params=None):
+    """Vectorized equivalent of the matching Strategy subclass's signal() in bot.py.
+
+    params overrides DEFAULT_STRATEGY_PARAMS[strategy_code]; params=None reproduces
+    bot.py's exact hardcoded live behavior (used by run_backtest_for_symbol).
+    """
+    if strategy_code not in DEFAULT_STRATEGY_PARAMS:
+        raise ValueError(f"unknown strategy code '{strategy_code}'")
+    p = {**DEFAULT_STRATEGY_PARAMS[strategy_code], **(params or {})}
+
     close = df['close']
     sig = pd.Series('HOLD', index=df.index)
 
     if strategy_code == 'RSI':  # RSIStrategy
-        rsi = ta.momentum.RSIIndicator(close, window=14).rsi()
-        sig[rsi < 30] = 'BUY'
-        sig[rsi > 70] = 'SELL'
+        rsi = ta.momentum.RSIIndicator(close, window=p['window']).rsi()
+        sig[rsi < p['buy_threshold']] = 'BUY'
+        sig[rsi > p['sell_threshold']] = 'SELL'
     elif strategy_code == 'EMA':  # EMAStrategy
-        short = close.ewm(span=5).mean()
-        long = close.ewm(span=20).mean()
+        short = close.ewm(span=p['short_span']).mean()
+        long = close.ewm(span=p['long_span']).mean()
         sig[(short > long) & (short.shift(1) <= long.shift(1))] = 'BUY'
         sig[(short < long) & (short.shift(1) >= long.shift(1))] = 'SELL'
     elif strategy_code == 'MACD':  # MACDStrategy
-        diff = ta.trend.MACD(close).macd_diff()
+        diff = ta.trend.MACD(close, window_slow=p['slow'], window_fast=p['fast'], window_sign=p['signal']).macd_diff()
         sig[(diff > 0) & (diff.shift(1) <= 0)] = 'BUY'
         sig[(diff < 0) & (diff.shift(1) >= 0)] = 'SELL'
     elif strategy_code == 'BOLL':  # BollingerStrategy
-        bb = ta.volatility.BollingerBands(close)
+        bb = ta.volatility.BollingerBands(close, window=p['window'], window_dev=p['window_dev'])
         sig[close > bb.bollinger_hband()] = 'SELL'
         sig[close < bb.bollinger_lband()] = 'BUY'
     elif strategy_code == 'MOM':  # MomentumStrategy
-        roc = ta.momentum.ROCIndicator(close, window=5).roc()
-        sig[roc > 3] = 'BUY'
-        sig[roc < -3] = 'SELL'
-    else:
-        raise ValueError(f"unknown strategy code '{strategy_code}'")
+        roc = ta.momentum.ROCIndicator(close, window=p['window']).roc()
+        sig[roc > p['buy_threshold']] = 'BUY'
+        sig[roc < p['sell_threshold']] = 'SELL'
 
     return sig
 
 
-def simulate_trades(df, signals, sl_pct, tp_pct, fee, slippage_bps, initial_equity, warmup_bars):
+def compute_atr(df, window=14):
+    return ta.volatility.AverageTrueRange(df['high'], df['low'], df['close'], window=window).average_true_range()
+
+
+def simulate_trades(df, signals, *, fee, slippage_bps, initial_equity, warmup_bars,
+                     sl_pct=None, tp_pct=None, atr=None, sl_atr_mult=None, tp_atr_mult=None):
+    use_atr = atr is not None
+    flat_pct_given = sl_pct is not None or tp_pct is not None
+    if use_atr and flat_pct_given:
+        raise ValueError("specify either sl_pct/tp_pct or atr/sl_atr_mult/tp_atr_mult, not both")
+    if not use_atr and not flat_pct_given:
+        raise ValueError("must specify either sl_pct/tp_pct or atr/sl_atr_mult/tp_atr_mult")
+
     n = len(df)
     times = df['open_time'].to_numpy()
     closes = df['close'].to_numpy()
     highs = df['high'].to_numpy()
     lows = df['low'].to_numpy()
     sigs = signals.to_numpy()
+    atr_arr = atr.to_numpy() if use_atr else None
 
     slippage = slippage_bps / 10000.0
     equity = initial_equity
@@ -167,12 +195,20 @@ def simulate_trades(df, signals, sl_pct, tp_pct, fee, slippage_bps, initial_equi
             equity_curve[i] = equity
             if sigs[i] == 'BUY':
                 raw_entry = closes[i]
+                if use_atr:
+                    sl_price = raw_entry - sl_atr_mult * atr_arr[i]
+                    tp_price = raw_entry + tp_atr_mult * atr_arr[i]
+                    if sl_price <= 0:
+                        continue  # degenerate ATR blowup, skip this entry
+                else:
+                    sl_price = raw_entry * (1 - sl_pct / 100)
+                    tp_price = raw_entry * (1 + tp_pct / 100)
                 position = {
                     'entry_time': times[i],
                     'raw_entry': raw_entry,
                     'entry_eff': raw_entry * (1 + slippage) * (1 + fee),
-                    'sl_price': raw_entry * (1 - sl_pct / 100),
-                    'tp_price': raw_entry * (1 + tp_pct / 100),
+                    'sl_price': sl_price,
+                    'tp_price': tp_price,
                 }
             continue
 
@@ -268,7 +304,9 @@ def run_backtest_for_symbol(symbol, strategy_codes, args, start, end):
     for code in strategy_codes:
         signals = compute_signals(df, code)
         trades, equity_curve = simulate_trades(
-            df, signals, sl_pct, tp_pct, args.fee, args.slippage_bps, args.initial_equity, args.warmup_bars
+            df, signals, fee=args.fee, slippage_bps=args.slippage_bps,
+            initial_equity=args.initial_equity, warmup_bars=args.warmup_bars,
+            sl_pct=sl_pct, tp_pct=tp_pct,
         )
         metrics = compute_metrics(trades, equity_curve, args.initial_equity, args.risk_free_rate)
         results.append({'symbol': symbol, 'strategy': code, **metrics})
